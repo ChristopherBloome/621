@@ -1,0 +1,428 @@
+---
+title: "HW1_Distro"
+author: "Christopher Bloome"
+date: "3/2/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+
+
+
+
+
+--
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Libraries  
+
+```{r, eval=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(tidyverse)
+library(reshape2)
+library(VIM)
+library(corrplot)
+library(naniar)
+library(ggplot2)
+```
+
+
+# Data 
+
+In this homework assignment, we are asked to  explore, analyze and model a baseball data set containing approximately 2200 records. Each record represents a professional baseball team from the years 1871 to 2006 inclusive. Each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance of a 162 game season.   
+
+Our objective is to build a multiple linear regression model on the training data to predict the number of wins for the team based on the variables given or variables that derive from the variables provided. Below is a short description of the variables of interest in the data set:
+
+```{r message=FALSE, echo=F, out.width='90%', fig.show='hold'}
+#knitr::include_graphics('./variable_description.jpg')
+```
+
+
+# Load Data
+
+```{r}
+#train <- read.csv('./moneyball-training-data.csv')
+#test <- read.csv('./moneyball-evaluation-data.csv')
+
+train <-read.csv("https://raw.githubusercontent.com/ChristopherBloome/621/main/moneyball-training-data.csv")
+test <- read.csv("https://raw.githubusercontent.com/ChristopherBloome/621/main/moneyball-evaluation-data.csv")
+
+#Removing the index variable
+train$INDEX <- NULL
+test$INDEX <- NULL
+```
+
+```{r}
+head(train)
+```
+
+
+The train data set has 2276 records with 17 variables.
+
+```{r}
+str(train)
+```
+All the variables are integer and TEAM_BATTING_HBP has a lot of missing values. Let's look at the summary of the data.
+
+```{r}
+summary(train)
+```
+```{r message=F, warning=F}
+g = melt(train)
+ggplot(g, aes(x= value)) + 
+   geom_density(fill='blue') + 
+   facet_wrap(~variable, scales = 'free') +
+   theme_light()
+```
+
+Check for rows with missing values
+
+```{r message=F, warning=F}
+sum(complete.cases(train))
+```
+Check how many rows with missing values in terms of percentage
+
+```{r message=F, warning=F}
+sum(complete.cases(train))/(nrow(train)) *100
+```
+
+
+```{r message=F, warning=F}
+missing_plot <- aggr(train, col=c('blue','red'),numbers=TRUE, sortVars=TRUE,labels=names(train), cex.axis=.7,gap=3, ylab=c("Missing data","Pattern"))
+```
+
+Six of the variable has missing values.  
+
+# Outliers
+
+```{r, message=FALSE,warning=FALSE, fig.width=10, fig.height= 9}
+ggplot(stack(train[,-1]), aes(x = ind, y = values, fill=ind)) + 
+  geom_boxplot(outlier.colour = "red",  outlier.alpha=.3) +
+  coord_cartesian(ylim = c(0, 1000)) +
+  theme_light()+
+  theme(axis.text.x=element_text(angle=45, hjust=1)) 
+  
+```
+
+# Correlations 
+
+```{r message=FALSE, warning=FALSE,fig.width=10, fig.height= 9}
+train %>% 
+  cor(., use = "complete.obs") %>%
+  corrplot(., method = "color", type = "upper", tl.col = "black", tl.cex=.8, diag = FALSE)
+```
+
+
+
+# Data Preparation
+
+Let's remove TEAM_BATTING_HBP as it has 91.6% missing values
+
+```{r}
+train <- train[-10]
+```
+
+We will investigate missing data using naniar package in order to see if we should remove missing data.
+
+https://www.rdocumentation.org/packages/naniar/versions/0.6.0
+
+```{r message=FALSE, warning=FALSE,fig.width=10, fig.height= 9}
+vis_miss(train)
+```
+
+
+```{r}
+gg_miss_var(train)
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+gg_miss_upset(train, 
+              nsets = 5,
+              nintersects = NA)
+gg_miss_case(train)+
+  theme_classic()
+```
+
+Let's replace extreme outliers with median
+
+```{r}
+train1 <- train %>% mutate(TEAM_PITCHING_H = ifelse(TEAM_PITCHING_H > 5000, median(TEAM_PITCHING_H), TEAM_PITCHING_H),
+                            TEAM_PITCHING_SO = ifelse(TEAM_PITCHING_SO > 1500, median(TEAM_PITCHING_SO), TEAM_PITCHING_SO))
+test1 <- test %>% mutate(TEAM_PITCHING_H = ifelse(TEAM_PITCHING_H > 5000, median(TEAM_PITCHING_H), TEAM_PITCHING_H),
+                            TEAM_PITCHING_SO = ifelse(TEAM_PITCHING_SO > 1500, median(TEAM_PITCHING_SO), TEAM_PITCHING_SO))
+```
+
+
+Replace missing values with median
+
+```{r}
+train1[] <- lapply(train1, function(x) ifelse(is.na(x), median(x, na.rm=TRUE), x))
+test1[] <- lapply(test1, function(x) ifelse(is.na(x), median(x, na.rm=TRUE), x))
+```
+
+```{r}
+# Check missing values
+nrow(is.na(train1))
+nrow(is.na(test1))
+```
+
+# Note to teammate compiling: Above work was Forhad's - My work below: 
+
+```{r}
+#my packages, so they dont get lost 
+
+library(ggplot2)
+library(gridExtra)
+
+#moving the data to a new varaible, in case others are using train1 
+
+train2 <- train1 
+
+```
+
+# Calculated Fields: 
+
+Now that we have the data reasonably clean, we can calculate some additional fields that may be of use in our models. 
+
+## SLG 1 
+
+There exists a metric called "Slugging percentage" used by baseball teams in the modern era, that effectively determines the effectiveness of a hitter. This is traditionally calculated as follows: [Singles + Doubles x 2 + Triples x 3 + HRs x 4]/[Plate Appearances]. 
+
+As we do not have Plate Appearances, lets use hits in its place, effectively calculating how many bases a team gets on average each time one of its players gets a hit. 
+
+```{r}
+
+train2$SLG1 <- (train2$TEAM_BATTING_H + train2$TEAM_BATTING_2B + 2*train2$TEAM_BATTING_3B + 3*train2$TEAM_BATTING_HR)/train2$TEAM_BATTING_H
+```
+
+## SLG 2 
+
+While the above demonstrates the effectiveness of a team at the plate, each of the other statistics are aggregate sums. In that spirit, lets calculate a "slugging total" that is not scaled to the number of hits. 
+
+```{r}
+
+train2$SLG2 <- (train2$TEAM_BATTING_H + train2$TEAM_BATTING_2B + 2*train2$TEAM_BATTING_3B + 3*train2$TEAM_BATTING_HR)
+
+```
+
+## Diffs 
+
+Due to the changes in the way baseball has been played since its inception, aggregate totals may be less predictive them ratios of a team's outcomes vs their opponents. Lets create 3 variables, that measure ratios in this way. 
+
+As we will be building a learning model, we would not want to generate differences by way of subtracting, as they would be deemed redundant later on. 
+
+```{r}
+train2$HitDiff <- train2$TEAM_BATTING_H/ train2$TEAM_PITCHING_H
+
+train2$WalkDiff <- train2$TEAM_BATTING_BB/ train2$TEAM_PITCHING_BB 
+
+train2$HRDiff <- train2$TEAM_BATTING_HR/train2$TEAM_PITCHING_HR
+
+# Change NAs to Median - While NAs are caused by a value of 0 - cases where the denominator are 0 are more likely due to missing data than truly having no Hits, Walks or HRs in a season. 
+
+train2[] <- lapply(train2, function(x) ifelse(is.na(x), median(x, na.rm=TRUE), x))
+
+summary(train2)
+
+```
+
+
+# Transformations: 
+
+There are a few variables which seem as though they may be skewed in a manner, where they might be more predictive after a transformation. 
+
+## Walk Diff 
+
+Lets start with one of our calculated variables, WalkDiff. This variable will always be between 0 and 1. By taking the squareroot, are vaules remain between 0 and 1, but we effectively compress values such that the better performances become closer together, and worse performances become outliers. This results in a significantly more predictive variable. 
+
+```{r}
+#Not Transformed
+p1 <- ggplot(data=train2, aes(x=WalkDiff)) + geom_histogram()
+p2 <- ggplot(data=train2, aes(x = WalkDiff, y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+WalkDiff_LM = lm(TARGET_WINS ~ WalkDiff, data = train2)
+
+print(paste("Non Transformed",summary(WalkDiff_LM)$r.squared))
+
+WalkDiff_LM_DF <- data.frame(WalkDiff_LM$fitted.values, WalkDiff_LM$residuals)
+names(WalkDiff_LM_DF) <- c("Fitted","Resid")
+
+p3 <- ggplot(data=WalkDiff_LM_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+
+#sqrt 
+
+p4 <- ggplot(data=train2, aes(x=sqrt(WalkDiff))) + geom_histogram(bins = 50)
+p5 <- ggplot(data=train2, aes(x = sqrt(WalkDiff), y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+WalkDiff_LM2 = lm(TARGET_WINS ~ sqrt(WalkDiff), data = train2)
+
+print(paste("sqrt",summary(WalkDiff_LM2)$r.squared))
+
+WalkDiff_LM2_DF <- data.frame(WalkDiff_LM2$fitted.values, WalkDiff_LM2$residuals)
+names(WalkDiff_LM2_DF) <- c("Fitted","Resid")
+
+p6 <- ggplot(data=WalkDiff_LM2_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 2)
+
+
+
+
+```
+
+
+## TEAM_BATTING_HR
+
+We see that Home Runs is bi-model in nature, likely due to variation in the way the game has evolved. If we were to subset this data by era, we might see several distinct normal distributions. By taking the Log, we find the bi-model distribution becomes more normal, and that the range changes in a manner more fitting for a linear model. Reviewing our residual plots, we find that before the transformation, we have a much higher degree of variation for lower values. This is largely fixed after the transformation. 
+
+```{r}
+#Not Transformed
+p1 <- ggplot(data=train2, aes(x=TEAM_BATTING_HR)) + geom_histogram()
+p2 <- ggplot(data=train2, aes(x = TEAM_BATTING_HR, y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_BATTING_HR_LM = lm(TARGET_WINS ~ TEAM_BATTING_HR, data = train2)
+
+print(paste("Non Transformed",summary(TEAM_BATTING_HR_LM)$r.squared))
+
+TEAM_BATTING_HR_LM_DF <- data.frame(TEAM_BATTING_HR_LM$fitted.values, TEAM_BATTING_HR_LM$residuals)
+names(TEAM_BATTING_HR_LM_DF) <- c("Fitted","Resid")
+
+p3 <- ggplot(data=TEAM_BATTING_HR_LM_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+
+#Log10 
+
+p4 <- ggplot(data=train2, aes(x=log10(TEAM_BATTING_HR+1))) + geom_histogram()
+p5 <- ggplot(data=train2, aes(x = log10(TEAM_BATTING_HR+1), y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_BATTING_HR_LM2 = lm(TARGET_WINS ~ log10(TEAM_BATTING_HR+1), data = train2)
+
+print(paste("Log10",summary(TEAM_BATTING_HR_LM2)$r.squared))
+
+TEAM_BATTING_HR_LM2_DF <- data.frame(TEAM_BATTING_HR_LM2$fitted.values, TEAM_BATTING_HR_LM2$residuals)
+names(TEAM_BATTING_HR_LM2_DF) <- c("Fitted","Resid")
+
+p6 <- ggplot(data=TEAM_BATTING_HR_LM2_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 2)
+
+
+
+```
+
+
+## TEAM_PITCHING_BB 
+
+At first glance, it appears that a log transformation  increases the predictive power of the pitching/walks metric. 
+
+```{r}
+
+#Not Transformed
+p1 <- ggplot(data=train2, aes(x=TEAM_PITCHING_BB)) + geom_histogram()
+p2 <- ggplot(data=train2, aes(x = TEAM_PITCHING_BB, y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_PITCHING_BB_LM = lm(TARGET_WINS ~ TEAM_PITCHING_BB, data = train2)
+
+print(paste("Non Transformed",summary(TEAM_PITCHING_BB_LM)$r.squared))
+
+TEAM_PITCHING_BB_LM_DF <- data.frame(TEAM_PITCHING_BB_LM$fitted.values, TEAM_PITCHING_BB_LM$residuals)
+names(TEAM_PITCHING_BB_LM_DF) <- c("Fitted","Resid")
+
+p3 <- ggplot(data=TEAM_PITCHING_BB_LM_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+
+#Log10 
+
+p4 <- ggplot(data=train2, aes(x=log10(TEAM_PITCHING_BB+1))) + geom_histogram()
+p5 <- ggplot(data=train2, aes(x = log10(TEAM_PITCHING_BB+1), y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_PITCHING_BB_LM2 = lm(TARGET_WINS ~ log10(TEAM_PITCHING_BB+1), data = train2)
+
+print(paste("Log10",summary(TEAM_PITCHING_BB_LM2)$r.squared))
+
+TEAM_PITCHING_BB_LM2_DF <- data.frame(TEAM_PITCHING_BB_LM2$fitted.values, TEAM_PITCHING_BB_LM2$residuals)
+names(TEAM_PITCHING_BB_LM2_DF) <- c("Fitted","Resid")
+
+p6 <- ggplot(data=TEAM_PITCHING_BB_LM2_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 2)
+
+
+
+```
+
+However, after a closer look, we find that this is actually due to the treatment of outliers. Notice the extreme high values before the transformation, and the low value after the transformation. 
+
+We can accomplish an increased level of predictiveness by removing these extremes with the median of the set. It is likely that these are in fact errors in the data. 
+
+```{r}
+
+train2 <- train2 %>% mutate(TEAM_PITCHING_BB = ifelse(TEAM_PITCHING_BB > 1300, median(TEAM_PITCHING_BB), TEAM_PITCHING_BB))
+
+train2 <- train2 %>% mutate(TEAM_PITCHING_BB = ifelse(TEAM_PITCHING_BB < 20, median(TEAM_PITCHING_BB), TEAM_PITCHING_BB))
+
+#Not Transformed
+p1 <- ggplot(data=train2, aes(x=TEAM_PITCHING_BB)) + geom_histogram()
+p2 <- ggplot(data=train2, aes(x = TEAM_PITCHING_BB, y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_PITCHING_BB_LM = lm(TARGET_WINS ~ TEAM_PITCHING_BB, data = train2)
+
+print(paste("Non Transformed",summary(TEAM_PITCHING_BB_LM)$r.squared))
+
+TEAM_PITCHING_BB_LM_DF <- data.frame(TEAM_PITCHING_BB_LM$fitted.values, TEAM_PITCHING_BB_LM$residuals)
+names(TEAM_PITCHING_BB_LM_DF) <- c("Fitted","Resid")
+
+p3 <- ggplot(data=TEAM_PITCHING_BB_LM_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+
+#Log10 
+
+p4 <- ggplot(data=train2, aes(x=log10(TEAM_PITCHING_BB+1))) + geom_histogram()
+p5 <- ggplot(data=train2, aes(x = log10(TEAM_PITCHING_BB+1), y=TARGET_WINS)) + geom_jitter() + geom_smooth(formula= y~x) + geom_smooth(method='lm', formula= y~x)
+TEAM_PITCHING_BB_LM2 = lm(TARGET_WINS ~ log10(TEAM_PITCHING_BB+1), data = train2)
+
+print(paste("Log10",summary(TEAM_PITCHING_BB_LM2)$r.squared))
+
+TEAM_PITCHING_BB_LM2_DF <- data.frame(TEAM_PITCHING_BB_LM2$fitted.values, TEAM_PITCHING_BB_LM2$residuals)
+names(TEAM_PITCHING_BB_LM2_DF) <- c("Fitted","Resid")
+
+p6 <- ggplot(data=TEAM_PITCHING_BB_LM2_DF, aes(y=Resid, x = Fitted )) + geom_jitter() + geom_smooth(method='lm', formula= y~x)
+
+grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 2)
+
+
+
+```
+The log transformation does improve our predictive power but only slightly. 
+
+# Model 1 
+
+Lets begin with a straightforward Linear Model. 
+
+```{r}
+model.1a <- lm(TARGET_WINS ~ ., data = train1)
+print(paste("R^2 of model with all provided variables no transformations:", summary(model.1a)$r.squared))
+
+model.1b <- lm(TARGET_WINS ~ ., data = train2)
+print(paste("R^2 of model with all provided variables, calculated variables, truncated but no transformations:", summary(model.1b)$r.squared))
+#summary(model.1b)
+
+
+model.1c <- lm(TARGET_WINS~TEAM_BATTING_H+TEAM_BATTING_2B+log10(TEAM_BATTING_HR+1)+TEAM_BATTING_BB+TEAM_PITCHING_H+TEAM_PITCHING_HR+log10(TEAM_PITCHING_BB+1)+TEAM_FIELDING_E + TEAM_BASERUN_SB + TEAM_PITCHING_SO + TEAM_FIELDING_DP + SLG1 + SLG2 + HRDiff  + WalkDiff, data = train2)
+
+print(paste("R^2 simplest, most predictive model of this type:", summary(model.1c)$r.squared))
+
+summary(model.1c)
+
+```
+
+In the end, we learned a few things from the first model: 
+
+* We found that higher order hits were generally not predictive, likely due to their rarity. Triples were eliminated, though  HR and the HR ratios remained. 
+
+* While the square root transformation seemed more predictive in our prep, it actually made the model worse and was ultimately removed. 
+
+* The Log transformations and the truncating of Walks proved very effective. 
+
